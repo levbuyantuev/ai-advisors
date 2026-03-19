@@ -1,14 +1,17 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import OpenAI from 'openai';
 
-// Model mapping: our internal IDs → OpenRouter model names
+// Model mapping: our internal IDs → OpenRouter model names (free tier)
 const MODEL_MAP: Record<string, string> = {
-  'gemini_flash': 'google/gemini-2.5-flash-preview',
-  'llama_70b': 'meta-llama/llama-3.3-70b-instruct',
-  'llama_8b': 'meta-llama/llama-3.1-8b-instruct:free',
-  'mistral_small': 'mistralai/mistral-small-3.1-24b-instruct:free',
-  'qwen_72b': 'qwen/qwen-2.5-72b-instruct:free',
+  'gemini_flash': 'google/gemma-3-12b-it:free',
+  'llama_70b': 'nvidia/nemotron-3-nano-30b-a3b:free',
+  'llama_8b': 'arcee-ai/trinity-large-preview:free',
+  'mistral_small': 'stepfun/step-3.5-flash:free',
+  'qwen_72b': 'z-ai/glm-4.5-air:free',
 };
+
+// Fallback model if primary fails
+const FALLBACK_MODEL = 'openrouter/free';
 
 interface AgentRequest {
   id: string;
@@ -30,7 +33,7 @@ async function generateResponse(
   userMessage: string,
   history: { role: string; content: string }[]
 ): Promise<string> {
-  const model = MODEL_MAP[agent.modelId] || MODEL_MAP['llama_8b'];
+  const primaryModel = MODEL_MAP[agent.modelId] || FALLBACK_MODEL;
 
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: agent.systemPrompt },
@@ -41,14 +44,27 @@ async function generateResponse(
     { role: 'user', content: userMessage },
   ];
 
-  const response = await client.chat.completions.create({
-    model,
-    messages,
-    max_tokens: 2048,
-    temperature: 0.7,
-  });
+  // Try primary model, fallback to openrouter/free on failure
+  const modelsToTry = [primaryModel, FALLBACK_MODEL];
+  let lastError: any = null;
 
-  return response.choices[0]?.message?.content || 'Нет ответа.';
+  for (const model of modelsToTry) {
+    try {
+      const response = await client.chat.completions.create({
+        model,
+        messages,
+        max_tokens: 2048,
+        temperature: 0.7,
+      });
+      return response.choices[0]?.message?.content || 'Нет ответа.';
+    } catch (err: any) {
+      lastError = err;
+      console.log(`[FALLBACK] ${model} failed (${err?.status || err?.message}), trying next...`);
+      continue;
+    }
+  }
+
+  throw lastError;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

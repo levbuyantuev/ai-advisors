@@ -25,11 +25,11 @@ export interface CouncilRoom {
 }
 
 export const AI_MODELS = {
-  gemini_flash: { name: 'Gemini 2.5 Flash', provider: 'Google' },
-  llama_70b: { name: 'Llama 3.3 70B', provider: 'Meta' },
-  llama_8b: { name: 'Llama 3.1 8B', provider: 'Meta (free)' },
-  mistral_small: { name: 'Mistral Small 3.1', provider: 'Mistral (free)' },
-  qwen_72b: { name: 'Qwen 2.5 72B', provider: 'Qwen (free)' },
+  gemini_flash: { name: 'Gemma 3 12B', provider: 'Google (free)' },
+  llama_70b: { name: 'Nemotron 30B', provider: 'Nvidia (free)' },
+  llama_8b: { name: 'Trinity Large', provider: 'Arcee (free)' },
+  mistral_small: { name: 'Step 3.5 Flash', provider: 'StepFun (free)' },
+  qwen_72b: { name: 'GLM-4.5 Air', provider: 'Z-AI (free)' },
 } as const;
 
 export type ModelId = keyof typeof AI_MODELS;
