@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import OpenAI from 'openai';
 
 // Model mapping: our internal IDs → OpenRouter model names (free tier)
 const MODEL_MAP: Record<string, string> = {
@@ -27,18 +26,50 @@ interface ChatRequestBody {
   history?: { role: string; content: string }[];
 }
 
+async function callOpenRouter(
+  apiKey: string,
+  model: string,
+  messages: { role: string; content: string }[],
+  referer: string
+): Promise<string> {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': referer,
+      'X-Title': 'AI Советники',
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: 2048,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`OpenRouter ${response.status}: ${errorBody}`);
+  }
+
+  const data = await response.json();
+  return data?.choices?.[0]?.message?.content || 'Нет ответа.';
+}
+
 async function generateResponse(
-  client: OpenAI,
+  apiKey: string,
   agent: AgentRequest,
   userMessage: string,
-  history: { role: string; content: string }[]
+  history: { role: string; content: string }[],
+  referer: string
 ): Promise<string> {
   const primaryModel = MODEL_MAP[agent.modelId] || FALLBACK_MODEL;
 
-  const messages: OpenAI.ChatCompletionMessageParam[] = [
+  const messages = [
     { role: 'system', content: agent.systemPrompt },
     ...history.slice(-10).map((m) => ({
-      role: m.role as 'user' | 'assistant',
+      role: m.role,
       content: m.content,
     })),
     { role: 'user', content: userMessage },
@@ -50,16 +81,10 @@ async function generateResponse(
 
   for (const model of modelsToTry) {
     try {
-      const response = await client.chat.completions.create({
-        model,
-        messages,
-        max_tokens: 2048,
-        temperature: 0.7,
-      });
-      return response.choices[0]?.message?.content || 'Нет ответа.';
+      return await callOpenRouter(apiKey, model, messages, referer);
     } catch (err: any) {
       lastError = err;
-      console.log(`[FALLBACK] ${model} failed (${err?.status || err?.message}), trying next...`);
+      console.log(`[FALLBACK] ${model} failed: ${err?.message?.slice(0, 100)}, trying next...`);
       continue;
     }
   }
@@ -68,6 +93,14 @@ async function generateResponse(
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -77,16 +110,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'OPENROUTER_API_KEY not configured' });
   }
 
-  const client = new OpenAI({
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKey,
-    defaultHeaders: {
-      'HTTP-Referer': process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : 'http://localhost:3000',
-      'X-Title': 'AI Советники',
-    },
-  });
+  const referer = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'http://localhost:3000';
 
   const { message, agents, history = [] } = req.body as ChatRequestBody;
 
@@ -98,7 +124,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
   });
 
   // Generate responses from all agents in parallel
@@ -106,7 +133,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       res.write(`data: ${JSON.stringify({ type: 'thinking', agentId: agent.id })}\n\n`);
 
-      const content = await generateResponse(client, agent, message, history);
+      const content = await generateResponse(apiKey, agent, message, history, referer);
 
       const agentMsg = {
         id: `${agent.id}-${Date.now()}`,
@@ -120,9 +147,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch (err: any) {
       console.error(`[LLM ERROR] agent=${agent.id} model=${agent.modelId}:`, err?.message);
       const errorMsg =
-        err?.status === 429
+        err?.message?.includes('429')
           ? 'Лимит API исчерпан. Попробуйте через минуту.'
-          : `Ошибка: ${err?.message || 'неизвестная ошибка'}`;
+          : `Ошибка: ${err?.message?.slice(0, 100) || 'неизвестная ошибка'}`;
 
       res.write(`data: ${JSON.stringify({ type: 'error', agentId: agent.id, error: errorMsg })}\n\n`);
     }
