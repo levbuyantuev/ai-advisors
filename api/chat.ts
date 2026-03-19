@@ -38,7 +38,7 @@ async function callOpenRouter(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
       'HTTP-Referer': referer,
-      'X-Title': 'AI Советники',
+      'X-Title': 'AI Advisors',
     },
     body: JSON.stringify({
       model,
